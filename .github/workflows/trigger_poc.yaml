@@ -1,0 +1,10 @@
+name: Trigger POC Exploit
+on: [workflow_dispatch]
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    steps:
+      - run: |
+          echo "This shows the exploit can be triggered"
+          echo "The real exploit runs in ghcr-auth.yaml via pull_request_target"
