@@ -1,0 +1,21 @@
+name: PROOF - Vulnerability Demonstration
+on: [workflow_dispatch]  # Manual trigger
+
+jobs:
+  prove:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Show the vulnerability exists
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "This standalone workflow shows the vulnerability concept."
+          echo "The actual exploit is in ghcr-auth.yaml via pull_request_target"
+          echo ""
+          echo "When a PR submits malicious code to cmd/krane/main.go:"
+          echo "1. pull_request_target triggers with base repo permissions"
+          echo "2. actions/checkout@v6 checks out PR code"
+          echo "3. go install . builds malicious binary"
+          echo "4. krane ls executes it with GITHUB_TOKEN access"
+          echo ""
+          echo "This is a security vulnerability."
